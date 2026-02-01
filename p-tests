@@ -1,0 +1,14 @@
+# running paired t-test and wilcoxon test on MSD results and GTD results
+import pandas as pd
+from scipy.stats import ttest_rel, wilcoxon
+
+A = pd.read_csv("MSDRES.csv")
+B = pd.read_csv("GTDRES.csv")
+
+metrics = ["accuracyS",	"precisionS",	"recallS",	"F1S",	"AUC ROCS",	"Log LossS","accuracyI","top5 accI","macro precisionI",	
+           "macro recallI",	"macro f1 scoreI",	"log lossI"]
+
+for m in metrics:
+    t, p = ttest_rel(B[m], A[m])
+    w, pw = wilcoxon(B[m], A[m])
+    print(m, "paired t-test p=", p, "wilcoxon p=", pw)
