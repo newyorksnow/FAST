@@ -1,0 +1,253 @@
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder 
+
+#----------------GNI and GDP 
+gni = pd.read_csv("/home/user/Downloads/workspace/GNI.csv", header=2)
+gdp_capita = pd.read_csv("/home/user/Downloads/workspace/GDPcapita.csv", header=2)
+
+gni_fixed = gni.melt(
+    id_vars=["CountryID", "Country"],
+    var_name="Year",
+    value_name="gni"
+)
+
+gdp_fixed = gdp_capita.melt(
+    id_vars=["CountryID", "Country"],
+    var_name="Year",
+    value_name="gdp_per_capita"
+)
+
+gni_fixed = gni_fixed.drop(columns=["CountryID"])
+gdp_fixed = gdp_fixed.drop(columns=["CountryID"])
+
+#------------------UCDP data
+
+ucdp = pd.read_csv("/home/user/Downloads/workspace/non-stateUCDP.csv")
+
+k_ucdp = ucdp.drop(columns=[
+    "conflict_id", "dyad_id", "org", "side_a_name", "side_a_name_fulltext",
+    "side_a_name_mothertongue", "side_a_id", "side_a_components",
+    "side_a_2nd", "gwno_a_2nd", "side_b_name", "side_b_name_fulltext",
+    "side_b_name_mothertongue", "side_b_id", "side_b_components",
+    "side_b_2nd", "gwno_b_2nd", "gwno_location", "region", "version", "ep_end_prec", "start_prec", "start_prec2"
+])
+
+#create column time_till_25_deaths
+
+k_ucdp["start_date"] = pd.to_datetime(k_ucdp["start_date"])
+k_ucdp["start_date2"] = pd.to_datetime(k_ucdp["start_date2"])
+
+k_ucdp["deltadays_until_25deaths"] = (k_ucdp["start_date2"] - k_ucdp["start_date"]).dt.days
+
+#create column deltadays_end
+
+k_ucdp["ep_end_date"] = pd.to_datetime(k_ucdp["ep_end_date"], errors="coerce")
+k_ucdp["time_till_end"] = (k_ucdp["ep_end_date"] - k_ucdp["start_date"]).dt.days
+
+#----------------COUPS
+coup = pd.read_csv("/home/user/Downloads/workspace/coups.csv")
+
+k_coup = coup.drop(columns=["cowcode", "region"])
+
+#----------------PROTESTS
+protest = pd.read_csv("/home/user/Downloads/workspace/protests.csv")
+
+#encode stateresponse and protesterdemand
+
+le = LabelEncoder()
+
+protest["stateresponse1_le"] = le.fit_transform(protest["stateresponse1"])
+protest["protesterdemand1_le"] = le.fit_transform(protest["protesterdemand1"])
+
+k_protest = protest.drop(columns=[
+    "stateresponse1", "stateresponse2", "stateresponse3", "stateresponse4", "stateresponse5", "stateresponse6", "stateresponse7", 
+    "protesterdemand1", "protesterdemand2", "protesterdemand3", "protesterdemand4", "id", "region"
+    ])
+
+#---------------------GTD
+
+tr = pd.read_csv("/home/user/Downloads/workspace/GTD.csv", encoding="latin1", low_memory=False)
+
+k_tr = tr[["attacktype1", "targtype1", "weaptype1",
+         "imonth", "iyear", "iday", "property", "success", "country_txt", "longitude", "latitude"]]
+
+k_tr = k_tr.rename(columns={"iyear": "Year", "country_txt": "Country"})
+k_tr = k_tr[k_tr["Year"] >= 1989]
+
+#-------------------PREPARING MERGE: ISO3
+
+import dask.dataframe as dd
+import pycountry
+
+#make same country column for merging
+
+dfs = [gni_fixed, gdp_fixed, k_coup, k_protest, k_ucdp, k_tr]
+
+#manual mapping for countries pycountry doesn't pick up
+country_fixes = {
+    "Bolivia (Plurinational State of)": "BOL",
+    "Iran (Islamic Republic of)": "IRN",
+    "Venezuela (Bolivarian Republic of)": "VEN",
+    "Lao People's DR": "LAO",
+    "Micronesia (FS of)": "FSM",
+    "Republic of Korea": "KOR",
+    "D.P.R. of Korea": "PRK",
+    "Republic of Vietnam": "VNM",
+    "Ivory Coast": "CIV",
+    "Swaziland": "SWZ",
+    "St. Vincent and the Grenadines": "VCT",
+
+    "China, Hong Kong SAR": "HKG",
+    "Hong Kong": "HKG",
+    "China, Macao SAR": "MAC",
+    "Macau": "MAC",
+
+    "State of Palestine": "PSE",
+    "West Bank and Gaza Strip": "PSE",
+
+    "D.R. of the Congo": "COD",
+    "Democratic Republic of the Congo": "COD",
+    "DR Congo (Zaire)": "COD",
+    "Zaire": "COD",
+
+    "Kosovo": "XKX",
+
+    "U.R. of Tanzania: Mainland": "TZA",
+
+    "Sudan (Former)": "SDN",
+    "South Sudan, Sudan": "SDN",
+
+    "Ethiopia (Former)": "ETH",
+
+    "Yemen Arab Republic (Former)": "YEM",
+    "Yemen Arab Republic": "YEM",
+    "Yemen People's Republic": "YEM",
+    "Yemen (North Yemen)": "YEM",
+
+    "USSR (Former)": "RUS",
+    "Soviet Union": "RUS",
+    "Russia (Soviet Union)": "RUS",
+    "Russia": "RUS",
+
+    "Czechoslovakia (Former)": "CZE",
+    "Czechoslovakia": "CZE",
+    "Yugoslavia": "SRB",
+    "Serbia (Yugoslavia)": "SRB",
+    "Serbia-Montenegro": "SRB",
+    "Bosnia-Herzegovina": "BIH",
+    "Macedonia": "MKD",
+
+    "West Germany (FRG)": "DEU",
+    "East Germany (GDR)": "DEU",
+
+    "Former Netherlands Antilles": "CUW",
+
+    "East Timor": "TLS",
+
+    "Ethiopia, Kenya": "ETH",
+    "Burkina Faso, Mali": "BFA",
+    "Syria, Turkey": "SYR",
+    "Mali, Niger": "MLI",
+    "Kenya, Uganda": "KEN",
+    "Bolivia, Brazil": "BOL",
+    "Afghanistan, Pakistan": "AFG",
+    "Ethiopia, South Sudan": "ETH",
+    "Myanmar (Burma), Thailand": "MMR",
+    "Mexico, United States of America": "MEX",
+    "Niger, Nigeria": "NER",
+    "Liberia, Sierra Leone": "LBR",
+
+    "Yemen Democratic (Former)": "YEM",
+    "Yugoslavia (Former)": "SRB",
+
+    "Zanzibar": "TZA",
+
+    "Myanmar (Burma)": "MMR",
+    "Madagascar (Malagasy)": "MDG",
+
+    "International": None,
+    "Turkey": "TUR",
+}
+
+def country_to_iso(name): #function for mapping country names to iso3 codes
+    if pd.isna(name):
+        return None
+
+    name = name.strip()
+
+    if name in country_fixes:
+        return country_fixes[name]
+    
+     #for X,Y country values (Pakistan, Syria). Every X,Y value gets assigned only the first country
+    if "," in name:
+        name = name.split(",")[0].strip()
+
+    try:
+        return pycountry.countries.lookup(name).alpha_3
+    except LookupError:
+        return None
+
+for df in dfs:
+    df["iso3"] = df["Country"].apply(country_to_iso) #apply to country column
+    
+for df in dfs:
+    df.drop(columns=["Country"], inplace=True)
+
+for df in dfs:
+    df.drop(df[df["iso3"].isna()].index, inplace=True)
+
+#---------------------------COMBINING DATA
+
+#adding prefixes for cols from each dataset for differentiation
+def add_prefix(df, prefix, exclude=("Year", "iso3")):
+    df = df.copy()
+    df.columns = [
+        col if col in exclude else f"{prefix}_{col}"
+        for col in df.columns
+    ]
+    return df
+
+gni_fixed   = add_prefix(gni_fixed,   "A")
+gdp_fixed   = add_prefix(gdp_fixed,   "B")
+k_ucdp     = add_prefix(k_ucdp,       "C")
+k_coup     = add_prefix(k_coup,       "D")
+k_protest  = add_prefix(k_protest,    "E")
+k_tr       = add_prefix(k_tr,         "F")
+
+
+#making sure Year is of correct type (int32)
+gni_fixed = gni_fixed.assign(Year=gni_fixed["Year"].astype("int32"))
+gdp_fixed = gdp_fixed.assign(Year=gdp_fixed["Year"].astype("int32"))
+k_coup = k_coup.assign(Year=k_coup["Year"].astype("int32"))
+k_protest = k_protest.assign(Year=k_protest["Year"].astype("int32"))
+k_ucdp = k_ucdp.assign(Year=k_ucdp["Year"].astype("int32"))
+k_tr = k_tr.assign(Year=k_tr["Year"].astype("int32"))
+
+#concat event data
+base = pd.concat([k_ucdp, k_coup, k_protest, k_tr], ignore_index=True)
+
+#add economic context by year-country
+for ctx in [gdp_fixed, gni_fixed]:
+    base = base.merge(ctx, on=["iso3", "Year"], how="left")
+
+
+#-------------------------CLEANING UP
+
+#sorting by year and country
+base = base[base["Year"] >= 1989]
+base = base[base["Year"] <= 2017]
+base = base.sort_values(by=["Year", "iso3"], ascending=[True, True])
+base = base.reset_index(drop=True)
+
+ec_features = ["A_gni", "B_gdp_per_capita"]
+base[ec_features] = base.groupby("iso3")[ec_features].ffill().bfill() #replace with most recent/future value (forward/backward fill ec. indicators)
+
+cols_to_fill = [col for col in base.columns if col not in ec_features + ["iso3","Year"]]
+base[cols_to_fill] = base[cols_to_fill].fillna(-1)
+
+base = base.reset_index(drop=True)
+base = base.drop(columns=["C_start_date", "C_start_date2", "C_ep_end_date", "D_date"]) #unneccessary cols dropped
+
+
+#base.to_csv("/home/user/Downloads/workspace/combined_data.csv", index=False) 
+#save dataset (locally)
