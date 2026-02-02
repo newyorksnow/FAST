@@ -1,0 +1,228 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Masking
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.callbacks import EarlyStopping
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    log_loss,
+    confusion_matrix,
+    f1_score,
+    roc_auc_score 
+)
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.model_selection import train_test_split
+import json
+
+
+GTD = pd.read_csv("/home/user/Downloads/workspace/GTD.csv", encoding="latin1")
+
+
+GTD = GTD[["attacktype1", "targtype1", "weaptype1",
+         "imonth", "iyear", "iday", "property", "success", "country_txt", "longitude", "latitude"]]
+
+GTD = GTD.rename(columns={"iyear": "Year", "country_txt": "iso3"})
+
+GTD = GTD[GTD["Year"] >= 1989]
+
+#---------- NANs
+
+# Drop rows with 2 or more NaNs
+GTD = GTD[GTD.isna().sum(axis=1) < 2].copy()
+
+# drop rows with NaN (best practise: -1 no sense, filling no sense for long/lat)
+GTD = GTD.dropna()
+
+#---------- DATATYPE ISSUES
+
+# FIX STR IN SUCCESS
+GTD = GTD[~GTD["success"].str.contains("Insurgency/Guerilla Action", na=False)].copy()
+GTD["success"] = pd.to_numeric(GTD["success"], errors="coerce") #parts are strings, coerce to be numeric. some rows have insurg/guerr
+
+# FOR F_TARGTYPE1
+GTD = GTD[~GTD["targtype1"].str.contains("Facility/Infrastructure Attack", na=False)].copy()
+GTD["targtype1"] = pd.to_numeric(GTD["targtype1"], errors="coerce")
+GTD = GTD.dropna(subset=["targtype1"]).copy()
+
+#WEAPTYPE1
+GTD = GTD[~GTD["weaptype1"].str.contains("Posted to website, blog, etc.", na=False)].copy()
+GTD["weaptype1"] = pd.to_numeric(GTD["weaptype1"], errors="coerce")
+
+#============================================================================================-MSD
+
+MSD = pd.read_csv("/home/user/Downloads/workspace/combined_data.csv")
+
+# convert str to numeric in h cols
+h = ["A_gni", "B_gdp_per_capita"]
+
+#apply 
+for col in h:
+    MSD[col] = (
+        MSD[col]
+        .astype(str)
+        .str.replace(",", "", regex=False)   # literal comma
+        .str.strip()
+        .replace({"..": np.nan, "NA": np.nan})
+    )
+    MSD[col] = pd.to_numeric(MSD[col], errors="coerce")
+
+# ------------- FIXING DATA TYPE PROBLEMS IN COLS
+
+# FIX STR IN F_SUCCESS
+MSD = MSD[~MSD["F_success"].str.contains("Insurgency/Guerilla Action", na=False)].copy()
+MSD["F_success"] = pd.to_numeric(MSD["F_success"], errors="coerce")
+
+# FOR F_TARGTYPE1
+MSD = MSD[~MSD["F_targtype1"].str.contains("Facility/Infrastructure Attack", na=False)].copy()
+MSD["F_targtype1"] = pd.to_numeric(MSD["F_targtype1"], errors="coerce")
+MSD = MSD.dropna(subset=["F_targtype1"]).copy()
+
+#WEAPTYPE1
+MSD = MSD[~MSD["F_weaptype1"].str.contains("Posted to website, blog, etc.", na=False)].copy()
+MSD["F_weaptype1"] = pd.to_numeric(MSD["F_weaptype1"], errors="coerce")
+#resetting index after filtering/cleaning to ensure proper alignment in 'data'
+MSD = MSD.reset_index(drop=True)
+
+#====================================================================================================== up to this point same cleaning etc as in lstm-gtd/lstm-multidata
+
+# ====== GTD OVERALL DATASET DIAGNOSTICS ======
+print("\n=== GTD OVERALL DATASET ===")
+print("Number of features (columns):", GTD.shape[1])
+print("How many datapoints/values in dataset:", GTD.size)
+print("-1 values:", (GTD == -1).sum().sum())
+print("Min value for Year column:", GTD["Year"].min())
+print("Max value for Year column:", GTD["Year"].max())
+print("# LAAHAHAHAHAAH")
+print("Label noise (iso3):")
+unknown_iso3 = GTD["iso3"].isin(["Unknown", "unknown", "UNK", "NA"]).sum()
+print("  Unknown/NA labels:", unknown_iso3)
+print("  Unknown %:", round(unknown_iso3 / len(GTD) * 100, 2))
+
+
+# ====== GTD EVALUATION FOR ISO3
+print("\n=== GTD CLASS DISTRIBUTION ===")
+counts = GTD["iso3"].value_counts()
+print("Num classes:", counts.shape[0])
+print("Total samples:", counts.sum())
+print("Min per class:", counts.min())
+print("Median per class:", int(counts.median()))
+print("Mean per class:", round(counts.mean(), 2))
+print("Max per class:", counts.max())
+print("Top 10 classes:\n", counts.head(10))
+print("Bottom 10 classes:\n", counts.tail(10))
+
+print("\n=== GTD MISSINGNESS ===")
+print("Total missing values:", GTD.isna().sum().sum())
+print("Missing % overall:", round(GTD.isna().sum().sum() / GTD.size * 100, 2))
+print("Missing % per column:\n", (GTD.isna().mean() * 100).round(2).sort_values(ascending=False))
+
+print("\n=== GTD LABEL NOISE ===")
+unknown = GTD["iso3"].isin(["Unknown", "unknown", "UNK", "NA"]).sum()
+print("Unknown/NA labels:", unknown)
+print("Unknown %:", round(unknown / len(GTD) * 100, 2))
+
+print("\n=== GTD FEATURE COVERAGE ===")
+for col in GTD.columns:
+    if col == "iso3":
+        continue
+    print(f"{col:15s} unique values: {GTD[col].nunique()}")
+
+print("\n=== GTD RARE CLASSES (<50 samples) ===")
+rare = counts[counts < 50]
+print("Num rare classes:", rare.shape[0])
+print("Total rare samples:", rare.sum())
+print("Rare % of data:", round(rare.sum() / counts.sum() * 100, 2))
+
+#entropy
+import numpy as np
+probs = counts / counts.sum()
+entropy = -np.sum(probs * np.log2(probs))
+print("\nGTD class entropy:", round(entropy, 4))
+
+
+# ====== GTD EVLUATION SUCCESS
+print("\n=== GTD SUCCESS CLASS DISTRIBUTION ===")
+counts_success = GTD["success"].value_counts()
+print("Num classes:", counts_success.shape[0])
+print("Total samples:", counts_success.sum())
+print("Top 10 classes:\n", counts_success.head(10))
+
+# entropy
+probs_success = counts_success / counts_success.sum()
+entropy_success = -np.sum(probs_success * np.log2(probs_success))
+print("\nGTD success class entropy:", round(entropy_success, 4))
+
+
+# ====== MSD OVERALL DATASET
+print("\n=== MSD OVERALL DATASET ===")
+print("Number of features (columns):", MSD.shape[1])
+print("How many datapoints/values in dataset:", MSD.size)
+print("-1 values:", (MSD == -1).sum().sum())
+print("Min value for Year column:", MSD["Year"].min())
+print("Max value for Year column:", MSD["Year"].max())
+print("# LAAHAHAHAHAAH")
+print("Label noise (iso3):")
+unknown_iso3_msd = MSD["iso3"].isin(["Unknown", "unknown", "UNK", "NA"]).sum()
+print("  Unknown/NA labels:", unknown_iso3_msd)
+print("  Unknown %:", round(unknown_iso3_msd / len(MSD) * 100, 2))
+
+
+# ====== MSD EVALUATION FOR ISO3
+print("\n=== MSD CLASS DISTRIBUTION ===")
+counts2 = MSD["iso3"].value_counts()
+print("Num classes:", counts2.shape[0])
+print("Total samples:", counts2.sum())
+print("Min per class:", counts2.min())
+print("Median per class:", int(counts2.median()))
+print("Mean per class:", round(counts2.mean(), 2))
+print("Max per class:", counts2.max())
+print("Top 10 classes:\n", counts2.head(10))
+print("Bottom 10 classes:\n", counts2.tail(10))
+
+print("\n=== MSD MISSINGNESS ===")
+print("Total missing values:", MSD.isna().sum().sum())
+print("Missing % overall:", round(MSD.isna().sum().sum() / MSD.size * 100, 2))
+print("Missing % per column:\n", (MSD.isna().mean() * 100).round(2).sort_values(ascending=False))
+
+print("\n=== MSD LABEL NOISE ===")
+unknown = MSD["iso3"].isin(["Unknown", "unknown", "UNK", "NA"]).sum()
+print("Unknown/NA labels:", unknown)
+print("Unknown %:", round(unknown / len(MSD) * 100, 2))
+
+print("\n=== MSD FEATURE COVERAGE ===")
+for col in MSD.columns:
+    if col == "iso3":
+        continue
+    print(f"{col:15s} unique values: {MSD[col].nunique()}")
+
+print("\n=== MSD RARE CLASSES (<50 samples) ===")
+rare = counts2[counts2 < 50]
+print("Num rare classes:", rare.shape[0])
+print("Total rare samples:", rare.sum())
+print("Rare % of data:", round(rare.sum() / counts2.sum() * 100, 2))
+
+#entropy
+import numpy as np
+probs = counts2 / counts2.sum()
+entropy = -np.sum(probs * np.log2(probs))
+print("\nMSD class entropy:", round(entropy, 4))
+
+
+# ====== MSD SUCCESS EVALUATION
+print("\n=== MSD F_SUCCESS CLASS DISTRIBUTION ===")
+counts_f_success = MSD["F_success"].value_counts()
+print("Num classes:", counts_f_success.shape[0])
+print("Total samples:", counts_f_success.sum())
+print("Top 10 classes:\n", counts_f_success.head(10))
+
+# entropy
+probs_f_success = counts_f_success / counts_f_success.sum()
+entropy_f_success = -np.sum(probs_f_success * np.log2(probs_f_success))
+print("\nMSD F_success class entropy:", round(entropy_f_success, 4))
